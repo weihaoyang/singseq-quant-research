@@ -1,0 +1,8 @@
+SingSeq Quant Research
+Copyright 2026 SingSeq Quant Research contributors.
+
+This distribution contains the standalone Python research and computation
+components of the SingSeq Quant project.
+
+Formula families and research references are documented in
+THIRD_PARTY_NOTICES.md. Dependency packages retain their own licenses.

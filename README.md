@@ -2,30 +2,47 @@
 
 # SingSeq Quant Research
 
-**本地量化研究 · 含成本回测 · 因子独立性诊断 · 可复现报告**
+**覆盖交易执行、账户状态、成本与统计评估的本地量化回测系统**
 
-Turn a Python factor into an execution-aware backtest and an inspectable research report.
+A local backtesting system for factor and portfolio research, with stateful execution, trading costs and reproducible reports.
 
 [![Research checks](https://github.com/weihaoyang/singseq-quant-research/actions/workflows/research.yml/badge.svg)](https://github.com/weihaoyang/singseq-quant-research/actions/workflows/research.yml)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](pyproject.toml)
 [![License](https://img.shields.io/badge/License-Apache--2.0-blue)](LICENSE)
 
-[快速开始](#快速开始) · [使用自己的数据](#使用自己的数据) · [研究能力](#研究能力) · [给-agent-的提示词](#给-agent-的提示词) · [Quant 官网](https://quant.singseq.com)
+[回测系统](#回测系统) · [快速开始](#快速开始) · [使用自己的数据](#使用自己的数据) · [研究能力](#研究能力) · [给-agent-的提示词](#给-agent-的提示词) · [Quant 官网](https://quant.singseq.com)
 
 </div>
 
-用一段 `compute_factor(df)` 表达选股想法，在自己的电脑上完成因子计算、历史回放、基准比较和报告导出。每次研究都能留下可检查的输入、配置与结果。
+SingSeq Quant Research 面向因子与组合研究，覆盖从行情面板、信号生成、交易执行、持仓与资金回放，到绩效分析、统计检验和报告归档的完整本地流程。
 
-SingSeq Quant Research 提供 Quant 产品使用的同源 Python 计算核心，面向个人研究者、课程与实验室，以及能够操作本机 Python 环境的 AI Agent。核心研究流程使用本地数据运行。
+用一段 `compute_factor(df)` 表达选股想法，系统负责按配置回放交易、计入成本并生成可检查的结果。计算核心与 Quant 产品同源，面向个人研究者、课程与实验室，以及能够操作本机 Python 环境的 AI Agent。
 
 ```mermaid
 flowchart LR
-    A[CSV / Parquet / DuckDB] --> B[Python 因子]
-    B --> C[次日开盘回放与交易成本]
-    C --> D[收益 · 回撤 · IC · 换手]
-    D --> E[基准相关性与统计检验]
-    E --> F[因子 CSV · JSON · HTML 报告]
+    A[行情面板] --> B[因子信号]
+    B --> C[交易约束与成本]
+    C --> D[持仓与资金回放]
+    D --> E[绩效与统计检验]
+    E --> F[CSV / JSON / HTML]
 ```
+
+## 回测系统
+
+日频引擎将多资产面板计算与有状态交易回放结合起来。每次调仓都经过成交约束、资金与持仓更新，再计算成本后的表现。
+
+| 回测环节 | 已实现的能力 |
+| --- | --- |
+| 信号与成交时序 | 收盘形成信号，次日开盘执行，收益按持仓时点对齐，成本与约束读取成交日信息 |
+| 账户与持仓 | 现金、股数、平均成本、已实现与未实现损益，逐日资金和权益曲线，总敞口与净敞口 |
+| A 股交易规则 | T+1、整手与价格精度、涨跌停、停牌、上市时间、ST 和历史股票池条件，由对应历史字段驱动 |
+| 成交可实现性 | 成交参与率限制、部分成交、拒单与原因记录，保留实际执行后的持仓状态 |
+| 成本与资金约束 | 佣金、日期相关印花税、冲击成本，以及可配置的融资成本、借券费率、杠杆和保证金约束 |
+| 评估与归档 | 分组曲线、成本后净值、回撤、换手、IC / ICIR 与衰减，因子 CSV、JSON 和独立 HTML 报告 |
+
+底层引擎通过 `BacktestResult` 提供交易与会计摘要 `ledger`，以及 `cash_curve`、`equity_curve` 和多空敞口序列，方便进一步核对资金与持仓。高层研究入口负责因子运行、诊断和报告导出。实现可直接查看[回测引擎](server/engine/backtest.py)、[交易状态机](server/engine/friction.py)与[本机研究入口](quant_sdk/local_backtest.py)。
+
+日频入口采用每日调仓，分钟研究提供单证券回放与横截面聚合入口。融资融券需要相应配置和借券输入，历史可交易性依赖对应时点的数据。缺字段采用的估计会记录在 `approximations` 中。
 
 ## 快速开始
 
@@ -142,18 +159,14 @@ print(result["approximations"])
 
 | 能力 | 实现与输出 |
 | --- | --- |
-| 日频回放 | 收盘信号、次日开盘成交、调仓、分组曲线、多空及多头表现 |
-| A 股交易约束 | T+1、整手、涨跌停、停牌、上市时间与 ST 条件，取决于输入字段 |
-| 交易成本 | 佣金、日期相关印花税、成交参与率与冲击成本，支持融资和融券相关参数 |
 | 因子分析 | Rank IC、ICIR、IC 衰减、分组表现、因子自相关与风格暴露 |
 | 因子库 | Alpha158 风格特征、精选 Alpha101、OHLC 波动率、量价、动量、估值及行业因子 |
 | 独立性分析 | 正负秩相关、版本化基准库、联合解释 R² 与残差 IC |
 | 统计诊断 | Deflated Sharpe Ratio、PBO / CSCV、BH 校正与多重检验折扣 |
 | 组合研究 | 因子收益矩阵、协方差、约束权重优化、分散程度与容量估计 |
 | 时间切分 | 带标签日期的前瞻收益、purged split、横截面指标与稳定性检查 |
-| 分钟研究 | 单证券分钟回放与分钟因子横截面聚合入口 |
 | 数据处理 | 供应商文件导入 staging DuckDB、字段核对和本地数据审计 |
-| 报告与自动化 | 本地 CSV / JSON、独立 HTML 报告、可发现的命令行入口 |
+| 自动化 | 研究脚手架、命令行运行、机器可读的能力与参数发现 |
 
 不同因子需要不同字段。估值、资金流、行业及分钟因子应使用对应输入，缺字段会返回具体原因。`Alpha158` 表示采用该特征家族的构造方式，具体窗口与输出列由[实现](factors_catalog/alpha158.py)定义。
 
@@ -166,6 +179,8 @@ quant-research named --factor-name price_momentum_20 --data outputs/quickstart/p
 ### 成交时点与输入假设
 
 日频引擎在收盘形成信号，于下一交易日开盘执行。成本和执行约束取成交日信息，收益区间按实际持仓时点对齐。具体会计处理以[引擎](server/engine/backtest.py)、[成本配置](server/engine/friction.py)和[回归测试](tests/test_local_backtest.py)为准。
+
+`BacktestConfig` 控制分组、每日调仓、行业与市值中性化、IC 衰减窗口和试验计数。`FrictionConfig` 进一步提供初始资金、整手、价格精度、成交参与率、费用、杠杆与保证金等执行参数。高层因子回测默认按多头运行，底层参数可用于有相应数据支持的更细致研究。
 
 基准收益的来源与缺字段估计都需要一起阅读。本地结果带有 `LOCAL_UNVERIFIED` 状态，研究诊断分与赛事正式成绩各有对应口径，参加 Quant 比赛时由平台按该赛季规则独立复核。
 

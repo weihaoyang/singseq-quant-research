@@ -1,0 +1,31 @@
+name: Research checks
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  research:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install standalone package
+        run: python -m pip install .
+      - name: Run numerical regressions
+        run: python run_tests.py
+      - name: Verify installed computation modules
+        run: python -I -c "from quant_sdk import run_local_backtest; from server.engine import Panel; from evaluation.overfit import pbo_cscv; from factors_catalog.alpha158 import compute_alpha158"
+      - name: Run the README quickstart
+        run: python examples/quickstart.py
+      - name: Discover research commands
+        run: quant-research capabilities

@@ -264,6 +264,9 @@ def auto(*, package_dir: str, start: str, end: str,
 def capabilities() -> Dict[str, object]:
     """Machine-readable entrypoints so any AI tool can discover how to start."""
     from evaluation import alpha_zoo, novelty_scoring
+    from factors_catalog.factor_registry import FACTOR_DEFINITIONS
+    from factors_catalog.r441_panel import MINUTE_ARCHIVE_END
+    from factors_catalog.r441_registry import INTERACTION_VERSION
 
     return {
         "package": "quant-research-toolkit",
@@ -282,6 +285,13 @@ def capabilities() -> Dict[str, object]:
         },
         "zoo_version": alpha_zoo.ZOO_VERSION,
         "scoring_version": novelty_scoring.SCORING_VERSION,
+        "reference_factors": {
+            "count": len(FACTOR_DEFINITIONS),
+            "implementation": "frozen-r441-oracle",
+            "interaction_version": INTERACTION_VERSION,
+            "minute_published_through": MINUTE_ARCHIVE_END,
+            "availability": "exact_input_fail_closed",
+        },
         "data": {"delivery": "researcher-owned local files",
                  "formats": ["CSV", "Parquet", "DuckDB"],
                  "offline": True},

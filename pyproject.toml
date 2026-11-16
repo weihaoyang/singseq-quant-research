@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "singseq-quant-research"
-version = "0.1.0"
+version = "0.2.0"
 description = "Local quantitative research with execution-aware backtesting, factor diagnostics and reproducible reports."
 readme = "README.md"
 requires-python = ">=3.11"

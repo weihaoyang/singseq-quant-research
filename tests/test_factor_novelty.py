@@ -203,6 +203,11 @@ class BridgeAndRunnerTests(unittest.TestCase):
         self.assertIn("entrypoints", caps)
         self.assertIn("auto", caps["entrypoints"])
         self.assertEqual(caps["zoo_version"], "zoo-1")
+        self.assertEqual(caps["reference_factors"]["count"], 241)
+        self.assertEqual(
+            caps["reference_factors"]["minute_published_through"],
+            "20260410",
+        )
 
 
 if __name__ == "__main__":

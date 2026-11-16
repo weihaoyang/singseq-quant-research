@@ -223,6 +223,49 @@ class RegistryOracleTests(unittest.TestCase):
                     equal_nan=True,
                 )
 
+    def test_bulk_matrix_matches_frozen_oracle(self) -> None:
+        from factors_catalog.r441_bulk import (
+            compute_registry_panel_bulk,
+            numba_available,
+        )
+
+        if not numba_available():
+            self.skipTest("Numba is not installed")
+        dates = [str(20200101 + index) for index in range(96)]
+        random = np.random.default_rng(73)
+        rows = []
+        for code in ("000001.SZ", "000002.SZ"):
+            close = np.exp(np.cumsum(random.normal(0, 0.01, len(dates)))) * 10
+            for day, price in zip(dates, close):
+                rows.append({
+                    "ts_code": code,
+                    "trade_date": day,
+                    "open": float(price * 0.999),
+                    "high": float(price * 1.01),
+                    "low": float(price * 0.99),
+                    "close": float(price),
+                    "amount": float(random.uniform(1e6, 1e7)),
+                    "benchmark_close": float(price),
+                })
+        prepared = pd.DataFrame(rows).sort_values(
+            ["ts_code", "trade_date"], kind="mergesort"
+        ).reset_index(drop=True)
+        expected, expected_names = compute_registry_panel(
+            prepared,
+            enable_numba_kernels=False,
+        )
+        actual, actual_names = compute_registry_panel_bulk(prepared)
+        self.assertEqual(set(actual_names), set(expected_names))
+        for name in expected_names:
+            np.testing.assert_allclose(
+                actual[name].to_numpy(dtype=float),
+                expected[name].to_numpy(dtype=float),
+                rtol=1e-12,
+                atol=1e-12,
+                equal_nan=True,
+                err_msg=name,
+            )
+
     def test_parallel_entry_falls_back_inline_without_posix_fork(self) -> None:
         dates = [str(20200101 + index) for index in range(80)]
         prepared = pd.DataFrame(

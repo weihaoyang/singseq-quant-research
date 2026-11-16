@@ -20,6 +20,20 @@ import numpy as np
 import pandas as pd
 
 
+def _group_rolling(
+    panel: pd.DataFrame,
+    column: str,
+    window: int,
+    method: str,
+) -> pd.Series:
+    rolling = panel.groupby("stock_id", sort=False)[column].rolling(
+        window,
+        min_periods=window,
+    )
+    values = getattr(rolling, method)()
+    return values.reset_index(level=0, drop=True).sort_index()
+
+
 def compute_factor_zoo(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
     """Compute complete Factor Zoo from an OHLCV panel.
 
@@ -87,44 +101,86 @@ def compute_factor_zoo(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
             ("range_mean", daily_range),
         ):
             name = f"{source}_{window}"
-            panel[name] = raw.groupby(panel["stock_id"]).transform(lambda x, w=window: x.rolling(w, min_periods=w).mean())
+            panel["_rolling_value"] = raw
+            panel[name] = _group_rolling(
+                panel,
+                "_rolling_value",
+                window,
+                "mean",
+            )
             factors.append(name)
+    panel = panel.drop(columns="_rolling_value")
 
     # 4. Volatility, Idiosyncratic Volatility, Downside Volatility
     for window in (5, 10, 20, 40, 60):
         for source, raw in (("vol", panel["ret_1"]), ("idio_vol", panel["residual_ret_1"])):
             name = f"{source}_{window}"
-            panel[name] = raw.groupby(panel["stock_id"]).transform(lambda x, w=window: x.rolling(w, min_periods=w).std())
+            panel["_rolling_value"] = raw
+            panel[name] = _group_rolling(
+                panel,
+                "_rolling_value",
+                window,
+                "std",
+            )
             factors.append(name)
 
         name = f"downside_vol_{window}"
         downside = panel["ret_1"].clip(upper=0.0)
-        panel[name] = downside.groupby(panel["stock_id"]).transform(lambda x, w=window: x.rolling(w, min_periods=w).std())
+        panel["_rolling_value"] = downside
+        panel[name] = _group_rolling(
+            panel,
+            "_rolling_value",
+            window,
+            "std",
+        )
         factors.append(name)
+    panel = panel.drop(columns="_rolling_value")
 
     # 5. Residual Momentum (Cross-sectional market residual cumulative drift)
     for window in (3, 5, 10, 20, 40, 60):
         name = f"residual_momentum_{window}"
-        panel[name] = groups["residual_ret_1"].transform(lambda x, w=window: x.rolling(w, min_periods=w).sum())
+        panel[name] = _group_rolling(
+            panel,
+            "residual_ret_1",
+            window,
+            "sum",
+        )
         factors.append(name)
 
     # 6. Extreme returns and positive fraction
     for window in (5, 10, 20, 40):
         for prefix, reducer in (("maxret", "max"), ("minret", "min")):
             name = f"{prefix}_{window}"
-            panel[name] = groups["ret_1"].transform(lambda x, w=window, r=reducer: getattr(x.rolling(w, min_periods=w), r)())
+            panel[name] = _group_rolling(
+                panel,
+                "ret_1",
+                window,
+                reducer,
+            )
             factors.append(name)
 
         name = f"positive_fraction_{window}"
         positive = (panel["ret_1"] > 0.0).astype(float)
-        panel[name] = positive.groupby(panel["stock_id"]).transform(lambda x, w=window: x.rolling(w, min_periods=w).mean())
+        panel["_rolling_value"] = positive
+        panel[name] = _group_rolling(
+            panel,
+            "_rolling_value",
+            window,
+            "mean",
+        )
         factors.append(name)
+    panel = panel.drop(columns="_rolling_value")
 
     # 7. Volume and Amount ratios
     for window in (5, 10, 20, 40, 60):
         for source in ("volume", "amount"):
             name = f"{source}_ratio_{window}"
-            rolling = groups[source].transform(lambda x, w=window: x.rolling(w, min_periods=w).mean())
+            rolling = _group_rolling(
+                panel,
+                source,
+                window,
+                "mean",
+            )
             panel[name] = panel[source] / rolling.replace(0.0, np.nan)
             factors.append(name)
 
@@ -132,15 +188,25 @@ def compute_factor_zoo(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
     for short, long in ((5, 20), (5, 60), (20, 60), (20, 120)):
         for source in ("volume", "amount"):
             name = f"{source}_trend_{short}_{long}"
-            short_mean = groups[source].transform(lambda x, w=short: x.rolling(w, min_periods=short).mean())
-            long_mean = groups[source].transform(lambda x, w=long: x.rolling(w, min_periods=long).mean())
+            short_mean = _group_rolling(
+                panel,
+                source,
+                short,
+                "mean",
+            )
+            long_mean = _group_rolling(
+                panel,
+                source,
+                long,
+                "mean",
+            )
             panel[name] = short_mean / long_mean.replace(0.0, np.nan)
             factors.append(name)
 
     # 9. Proximity to rolling highs and lows (Donchian channel breakout)
     for window in (20, 60, 120):
-        roll_high = groups["high"].transform(lambda x, w=window: x.rolling(w, min_periods=w).max())
-        roll_low = groups["low"].transform(lambda x, w=window: x.rolling(w, min_periods=w).min())
+        roll_high = _group_rolling(panel, "high", window, "max")
+        roll_low = _group_rolling(panel, "low", window, "min")
         high_name, low_name = f"high_proximity_{window}", f"low_proximity_{window}"
         panel[high_name] = panel["close"] / roll_high.replace(0.0, np.nan)
         panel[low_name] = panel["close"] / roll_low.replace(0.0, np.nan)
@@ -149,16 +215,35 @@ def compute_factor_zoo(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
     # 10. Skewness and Continuous Return
     for window in (10, 20, 40):
         skew_name = f"return_skew_{window}"
-        panel[skew_name] = groups["ret_1"].transform(lambda x, w=window: x.rolling(w, min_periods=w).skew())
-        abs_sum = panel["ret_1"].abs().groupby(panel["stock_id"]).transform(lambda x, w=window: x.rolling(w, min_periods=w).sum())
+        panel[skew_name] = _group_rolling(
+            panel,
+            "ret_1",
+            window,
+            "skew",
+        )
+        panel["_rolling_value"] = panel["ret_1"].abs()
+        abs_sum = _group_rolling(
+            panel,
+            "_rolling_value",
+            window,
+            "sum",
+        )
         continuous_name = f"continuous_return_{window}"
         panel[continuous_name] = groups["close"].pct_change(window) / abs_sum.replace(0.0, np.nan)
         factors.extend([skew_name, continuous_name])
+    panel = panel.drop(columns="_rolling_value")
 
     # 11. Amihud illiquidity proxy (20-day)
-    panel["amihud_20"] = (panel["ret_1"].abs() / panel["amount"].where(panel["amount"] > 0)).groupby(
-        panel["stock_id"]
-    ).transform(lambda x: x.rolling(20, min_periods=20).mean())
+    panel["_rolling_value"] = panel["ret_1"].abs() / panel[
+        "amount"
+    ].where(panel["amount"] > 0)
+    panel["amihud_20"] = _group_rolling(
+        panel,
+        "_rolling_value",
+        20,
+        "mean",
+    )
+    panel = panel.drop(columns="_rolling_value")
     factors.append("amihud_20")
 
     factors = list(dict.fromkeys(factors))

@@ -14,6 +14,11 @@ import numpy as np
 import pandas as pd
 
 from factors_catalog.factor_registry import FACTOR_DEFINITIONS
+from factors_catalog.r441_bulk import (
+    compute_registry_panel_bulk,
+    numba_available,
+    warm_registry_bulk,
+)
 from factors_catalog.r441_oracle.factors import (
     auction_turnover_imbalance_30m,
     close_drive_strength_30m,
@@ -128,6 +133,10 @@ def compute_registry_panel(
     for raw_symbol, raw_positions in groups.items():
         symbol = str(raw_symbol)
         positions = np.asarray(raw_positions, dtype=np.int64)
+        symbol_arrays = {
+            name: values[positions]
+            for name, values in arrays.items()
+        }
         fundamentals = (
             (fundamental_by_symbol_date or {}).get(symbol, {})
         )
@@ -137,18 +146,18 @@ def compute_registry_panel(
             side = {
                 key: _window(values, begin, end)
                 for key, column in _SIDE_COLUMNS.items()
-                if (values := arrays.get(column)) is not None
+                if (values := symbol_arrays.get(column)) is not None
             }
             day = str(dates[position])
             factors = compute_registry_factor_snapshot(
                 RegistryFactorInputs(
-                    prices=_window(arrays["close"], begin, end),
-                    turnover=_window(arrays["amount"], begin, end),
-                    opens=_window(arrays["open"], begin, end),
-                    highs=_window(arrays["high"], begin, end),
-                    lows=_window(arrays["low"], begin, end),
+                    prices=_window(symbol_arrays["close"], begin, end),
+                    turnover=_window(symbol_arrays["amount"], begin, end),
+                    opens=_window(symbol_arrays["open"], begin, end),
+                    highs=_window(symbol_arrays["high"], begin, end),
+                    lows=_window(symbol_arrays["low"], begin, end),
                     benchmark_prices=_window(
-                        arrays["benchmark_close"], begin, end
+                        symbol_arrays["benchmark_close"], begin, end
                     ),
                     fundamental_factors=dict(fundamentals.get(day, {})),
                     enable_numba_kernels=enable_numba_kernels,
@@ -427,6 +436,10 @@ def compute_registry_arrays(
         if symbol in completed_symbols:
             continue
         positions = np.asarray(raw_positions, dtype=np.int64)
+        symbol_arrays = {
+            name: values[positions]
+            for name, values in arrays.items()
+        }
         fundamentals = (
             (fundamental_by_symbol_date or {}).get(symbol, {})
         )
@@ -436,17 +449,17 @@ def compute_registry_arrays(
             side = {
                 key: _window(values, begin, end)
                 for key, column in _SIDE_COLUMNS.items()
-                if (values := arrays.get(column)) is not None
+                if (values := symbol_arrays.get(column)) is not None
             }
             factors = compute_registry_factor_snapshot(
                 RegistryFactorInputs(
-                    prices=_window(arrays["close"], begin, end),
-                    turnover=_window(arrays["amount"], begin, end),
-                    opens=_window(arrays["open"], begin, end),
-                    highs=_window(arrays["high"], begin, end),
-                    lows=_window(arrays["low"], begin, end),
+                    prices=_window(symbol_arrays["close"], begin, end),
+                    turnover=_window(symbol_arrays["amount"], begin, end),
+                    opens=_window(symbol_arrays["open"], begin, end),
+                    highs=_window(symbol_arrays["high"], begin, end),
+                    lows=_window(symbol_arrays["low"], begin, end),
                     benchmark_prices=_window(
-                        arrays["benchmark_close"], begin, end
+                        symbol_arrays["benchmark_close"], begin, end
                     ),
                     fundamental_factors=dict(
                         fundamentals.get(str(dates[position]), {})
@@ -601,11 +614,17 @@ def _compute_partition(payload: tuple[int, list[str]]) -> dict[str, Any]:
         symbol: (_PARALLEL_FUNDAMENTALS or {}).get(symbol, {})
         for symbol in symbols
     }
-    generated, names = compute_registry_panel(
-        selected,
-        fundamental_by_symbol_date=fundamentals,
-        enable_numba_kernels=True,
-    )
+    if numba_available():
+        generated, names = compute_registry_panel_bulk(
+            selected,
+            fundamental_by_symbol_date=fundamentals,
+        )
+    else:
+        generated, names = compute_registry_panel(
+            selected,
+            fundamental_by_symbol_date=fundamentals,
+            enable_numba_kernels=True,
+        )
     if _PARALLEL_MINUTE_ROOT:
         from data_foundation.minute import LocalMinuteStore
 
@@ -693,8 +712,8 @@ def compute_registry_arrays_parallel(
 ) -> list[str]:
     """Compute registry arrays in stock partitions and merge by global row."""
 
-    if not 1 <= int(workers) <= 8:
-        raise ValueError("registry workers must be between 1 and 8")
+    if not 1 <= int(workers) <= 72:
+        raise ValueError("registry workers must be between 1 and 72")
     directory = Path(output_directory)
     directory.mkdir(parents=True, exist_ok=True)
     checkpoint_path = directory / "r441-registry.checkpoint.json"
@@ -732,6 +751,8 @@ def compute_registry_arrays_parallel(
     )
     execution_mode = "process-fork" if os.name == "posix" else "inline"
     if execution_mode == "process-fork":
+        if numba_available():
+            warm_registry_bulk()
         context = multiprocessing.get_context("fork")
         with ProcessPoolExecutor(
             max_workers=len(split),

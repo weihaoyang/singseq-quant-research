@@ -18,6 +18,8 @@ SingSeq Quant Research 面向因子与组合研究，覆盖从行情面板、信
 
 用一段 `compute_factor(df)` 表达选股想法，系统负责按配置回放交易、计入成本并生成可检查的结果。计算核心与 Quant 产品同源，面向个人研究者、课程与实验室，以及能够操作本机 Python 环境的 AI Agent。
 
+当前公开版本为 `0.2.0`，新增完整 241 因子参考实现、专用数据适配器、精确事件依赖、分钟覆盖状态和 Windows/Linux 一致执行入口。
+
 ```mermaid
 flowchart LR
     A[行情面板] --> B[因子信号]

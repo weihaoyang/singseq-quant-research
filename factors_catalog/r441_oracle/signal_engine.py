@@ -1295,4 +1295,3 @@ def _main_wave_signal_payload(
         flow_strength=float(setup_decision.flow_strength),
         support_strength=float(setup_decision.support_strength),
     )
-

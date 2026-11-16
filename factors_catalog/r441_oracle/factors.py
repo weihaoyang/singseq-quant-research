@@ -3391,4 +3391,3 @@ def flow_price_divergence_10(flows: Sequence[float], prices: Sequence[float]) ->
     flow_sign = 1 if _mean(flows[-10:]) > 0 else -1
     price_ret = _safe_div(prices[-1] - prices[-10], prices[-10])
     return abs(flow_sign - (1 if price_ret > 0 else -1)) / 2.0
-

@@ -1,7 +1,7 @@
 """Novelty baseline + novelty-weighted scoring + tearsheet contracts."""
 
-import unittest
 import tempfile
+import unittest
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -133,6 +133,26 @@ class TearsheetTests(unittest.TestCase):
         self.assertIn("LOCAL_UNVERIFIED", html)
         self.assertIn("<svg", html)
 
+    def test_ic_decay_keeps_lags_and_uses_absolute_ic_height(self):
+        panel = _panel()
+        factor = alpha_zoo.compute(panel, ["reversal_5"])["reversal_5"].to_numpy()
+        result = self._result()
+        result.ic_decay = {1: -0.04, 2: 0.01, 5: 0.20}
+        report = tearsheet.build(result, panel, factor, n_groups=5)
+        self.assertEqual(report["metrics"]["ic_decay_lags"], [1, 2, 5])
+        html = tearsheet.render_html(report)
+        self.assertIn("IC decay (h=1,2,5)", html)
+        self.assertIn("height:3px", html)
+        self.assertIn("height:16px", html)
+
+    def test_turnover_mean_excludes_the_terminal_no_trade_slot(self):
+        panel = _panel()
+        factor = alpha_zoo.compute(panel, ["reversal_5"])["reversal_5"].to_numpy()
+        result = self._result(days=3)
+        result.turnover_series = np.array([1.0, 3.0, 0.0])
+        report = tearsheet.build(result, panel, factor, n_groups=5)
+        self.assertEqual(report["metrics"]["turnover_mean"], 2.0)
+
 
 class ResearchRunnerTests(unittest.TestCase):
     def test_scaffold_emits_a_compute_factor_template(self):
@@ -204,6 +224,7 @@ class BridgeAndRunnerTests(unittest.TestCase):
         self.assertIn("auto", caps["entrypoints"])
         self.assertEqual(caps["zoo_version"], "zoo-1")
         self.assertEqual(caps["reference_factors"]["count"], 241)
+        self.assertIn("Python >= 3.11", caps["requirements"])
         self.assertEqual(
             caps["reference_factors"]["minute_published_through"],
             "20260410",

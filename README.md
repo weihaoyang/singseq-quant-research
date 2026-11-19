@@ -18,16 +18,31 @@ SingSeq Quant Research 面向因子与组合研究，覆盖从行情面板、信
 
 用一段 `compute_factor(df)` 表达选股想法，系统负责按配置回放交易、计入成本并生成可检查的结果。计算核心与 Quant 产品同源，面向个人研究者、课程与实验室，以及能够操作本机 Python 环境的 AI Agent。
 
-当前公开版本为 `0.3.0`。参考因子注册表改为按股票整段执行：冻结公式只做一次编译预热，核心因子、公共滚动因子、PIT 基本面与组合因子分层计算。带完整侧输入和基本面的 140 日验收面板中，批量路径与原逐日 oracle 均输出 227 个因子，集合一致且逐值差异为 0；不再对每个股票日重建 241 因子快照。
+当前公开版本为 `0.4.0`。全面集成业界主流顶级开源量化基础设施（Nautilus Trader Rust 引擎、Alphalens 单因子分析、PyFolio 机构风控、PyPortfolioOpt 资产配置、AkShare 开源数据、Qlib LightGBM 时序防泄漏 Alpha、TA-Lib/MyTT 技术指标），并提供独立开源 AST 转义编译器 `jq2quant`，彻底解耦传统云端私有平台。
 
 ```mermaid
 flowchart LR
-    A[行情面板] --> B[因子信号]
-    B --> C[交易约束与成本]
-    C --> D[持仓与资金回放]
-    D --> E[绩效与统计检验]
-    E --> F[CSV / JSON / HTML]
+    A[AkShare / 本地数据] --> B[quant_sdk 核心]
+    B --> C[Nautilus Rust 撮合回测]
+    B --> D[Alphalens 因子评价]
+    B --> E[PyFolio 机构风控]
+    B --> F[PyPortfolioOpt 资产配置]
+    B --> G[LightGBM 时序 Alpha]
+    H[旧聚宽代码] --> I[jq2quant 独立编译器] --> B
 ```
+
+## 顶级量化开源生态原生集成 (Integrated Open-Source Stack)
+
+| 核心组件 | 模块路径 | 能力与优势 |
+| :--- | :--- | :--- |
+| **Nautilus Trader (Rust 内核)** | `quant_sdk.nautilus_adapter` | 纳秒级日内事件驱动回测引擎，原生支持 A 股每手 100 股最小交易量与 CNY 账户结算。 |
+| **Alphalens-Reloaded** | `quant_sdk.alphalens_tear_sheet` | 对冲基金级 IC/IR、信息比率、分位数分组收益单调性、半衰期衰减与独立 HTML 交互研报。 |
+| **PyFolio & Empyrical** | `quant_sdk.pyfolio_tear_sheet` | 机构级全息风控透视表、Top 5 水下最大回撤周期明细、95% 在险价值 (VaR) 与 CVaR。 |
+| **PyPortfolioOpt** | `quant_sdk.portfolio_optimizer` | 马克维茨最大夏普、最小方差、层次风险平价 (HRP 机器学习树聚类) 与 Black-Litterman 资产配置。 |
+| **AkShare 全市场数据** | `quant_sdk.akshare_connector` | 全免费实时行情快照、北向资金（沪深股通）净流入、机构龙虎榜席位、中债国债收益率曲线与宏观数据。 |
+| **Qlib + LightGBM** | `quant_sdk.ml_alpha` | Purged & Embargoed 时序防泄漏交叉验证（杜绝未来信息穿越），端到端挖掘非线性 Alpha 因子。 |
+| **TA-Lib & MyTT** | `quant_sdk.technical` | C 语言底层极速指标计算 + 完美兼容通达信/同花顺传统公式语法 (`CROSS`, `REF`, `SMA`, `KDJ`, `BOLL`)。 |
+| **jq2quant 独立编译器** | `jq2quant` | 独立开源 AST 聚宽语法编译器，一键将聚宽代码无损编译为标准现代面向对象 `quant_sdk.Strategy`。 |
 
 ## 回测系统
 

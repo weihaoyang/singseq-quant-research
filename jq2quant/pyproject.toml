@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jq2quant"
+version = "0.1.0"
+description = "Standalone open-source strategy transpiler and decoupled adapter from JoinQuant to modern quant frameworks"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Apache-2.0" }
+authors = [
+    { name = "Quant Research Kit Contributors" }
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Topic :: Office/Business :: Financial :: Investment",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "quant-sdk>=2.1.0",
+]
+
+[project.scripts]
+jq2quant = "jq2quant.cli:main"

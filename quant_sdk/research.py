@@ -17,12 +17,11 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
-from typing import Dict, Optional
 
 import numpy as np
 import pandas as pd
 
-__all__ = ["scaffold_factor", "run_research", "run_named_factor", "main"]
+__all__ = ["main", "run_named_factor", "run_research", "scaffold_factor"]
 
 _TEMPLATE = '''"""Factor: {name} ({family}, window={window}).
 
@@ -60,9 +59,10 @@ def scaffold_factor(name: str = "my_factor", family: str = "momentum",
 
 
 def _compute_factor_series(source: str, df: pd.DataFrame) -> np.ndarray:
-    from quant_sdk.local import _safe_builtins
+    from quant_sdk.local import _safe_builtins, audit_factor_source
 
-    env: Dict[str, object] = {"__builtins__": _safe_builtins(), "__name__": "__factor__",
+    audit_factor_source(source)
+    env: dict[str, object] = {"__builtins__": _safe_builtins(), "__name__": "__factor__",
                               "pd": pd, "pandas": pd, "np": np, "numpy": np}
     exec(compile(source, "<factor>", "exec"), env)  # noqa: S102 - researcher's own code, sandboxed builtins
     fn = env.get("compute_factor")
@@ -76,6 +76,23 @@ def _compute_factor_series(source: str, df: pd.DataFrame) -> np.ndarray:
     if len(values) != len(df) or not values.index.is_unique or set(values.index) != set(df.index):
         raise RuntimeError("compute_factor 输出必须与输入行索引一一对应")
     return pd.to_numeric(values.reindex(df.index), errors="coerce").to_numpy(dtype=float)
+
+
+def _factor_matrix_from_values(df: pd.DataFrame,
+                               values: np.ndarray) -> np.ndarray:
+    """Build a dense factor matrix without executing the factor twice."""
+    dates = sorted(df["trade_date"].astype(str).unique())
+    codes = sorted(df["ts_code"].astype(str).unique())
+    frame = df[["trade_date", "ts_code"]].copy()
+    frame["trade_date"] = frame["trade_date"].astype(str)
+    frame["ts_code"] = frame["ts_code"].astype(str)
+    frame["factor_value"] = np.asarray(values, dtype=float)
+    if frame.duplicated(["trade_date", "ts_code"]).any():
+        raise ValueError("面板存在重复的 trade_date + ts_code")
+    return (frame.pivot(index="trade_date", columns="ts_code",
+                        values="factor_value")
+            .reindex(index=dates, columns=codes)
+            .to_numpy(dtype=float))
 
 
 def _write_result(output, filename, frame):
@@ -92,16 +109,16 @@ def _write_result(output, filename, frame):
     Path(str(target) + ".provenance.json").write_text(json.dumps(provenance, indent=2), encoding="utf-8")
 
 
-def _verify_token(token: str, gateway: Optional[str]) -> str:
+def _verify_token(token: str, gateway: str | None) -> str:
     import urllib.request
 
     base = (gateway or "https://quant.singseq.com").rstrip("/")
     req = urllib.request.Request(f"{base}/api/v1/research/mesh/status",
                                  headers={"Authorization": f"Bearer {token}"})
     try:
-        with urllib.request.urlopen(req, timeout=8) as resp:  # noqa: S310
+        with urllib.request.urlopen(req, timeout=8) as resp:
             body = json.loads(resp.read().decode("utf-8"))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise SystemExit(f"网关授权校验失败：{exc}") from exc
     state = str((body.get("data") or {}).get("access_state", "UNKNOWN"))
     if state not in {"AUTHORIZED"}:
@@ -114,10 +131,14 @@ def _verify_token(token: str, gateway: Optional[str]) -> str:
 
 
 def run_research(*, factor_source: str, data_path: str, start: str, end: str,
-                 out_csv: Optional[str] = None, tearsheet_path: Optional[str] = None,
-                 with_novelty: bool = False, token: Optional[str] = None,
-                 gateway: Optional[str] = None, groups: int = 5,
-                 benchmark_code: str = "000300.SH") -> Dict[str, object]:
+                 out_csv: str | None = None, tearsheet_path: str | None = None,
+                 with_novelty: bool = False, token: str | None = None,
+                 gateway: str | None = None, groups: int = 5,
+                 benchmark_code: str = "000300.SH",
+                 allow_short: bool = False, costs: bool = True,
+                 neutralize: bool = False,
+                 n_trials: int = 1,
+                 backend: str = "auto") -> dict[str, object]:
     from quant_sdk.local_backtest import load_panel, run_local_backtest
 
     auth = _verify_token(token, gateway) if token else "unverified"
@@ -129,22 +150,27 @@ def run_research(*, factor_source: str, data_path: str, start: str, end: str,
     else:
         df = pd.read_csv(path)
     if df.empty:
-        raise SystemExit("输入面板为空，请核对数据路径与日期覆盖。")
+        raise SystemExit("数据为空：请确认已通过 `scripts/verify_research_access.py --download` 下载研究包。")
 
     df["trade_date"] = df["trade_date"].astype(str)
     df = df.loc[df.trade_date.between(str(start), str(end))].copy()
     df = df.sort_values(["ts_code", "trade_date"], kind="mergesort").reset_index(drop=True)
     factor_values = _compute_factor_series(factor_source, df)
+    factor_matrix = _factor_matrix_from_values(df, factor_values)
     if out_csv:
         out = df[["ts_code", "trade_date"]].copy()
         out["factor_value"] = factor_values
         _write_result(out, out_csv, df)
 
     result = run_local_backtest(factor_source, df, n_groups=groups,
+                                factor_matrix=factor_matrix,
+                                allow_short=allow_short, costs=costs,
+                                neutralize=neutralize, n_trials=n_trials,
                                 with_novelty=bool(with_novelty),
+                                backend=backend,
                                 tearsheet_path=tearsheet_path)
     result["gateway_auth"] = auth
-    result["panel_rows"] = int(len(factor_values))
+    result["panel_rows"] = len(factor_values)
     result["factor_rows"] = int(np.isfinite(factor_values).sum())
     result["nonfinite_factor_rows"] = int((~np.isfinite(factor_values)).sum())
     result["data_warnings"] = dict(df.attrs)
@@ -152,10 +178,14 @@ def run_research(*, factor_source: str, data_path: str, start: str, end: str,
 
 
 def run_named_factor(*, factor_name: str, data_path: str, start: str, end: str,
-                     out_csv: Optional[str] = None,
-                     tearsheet_path: Optional[str] = None,
+                     out_csv: str | None = None,
+                     tearsheet_path: str | None = None,
                      with_novelty: bool = False, groups: int = 5,
-                     benchmark_code: str = "000300.SH") -> Dict[str, object]:
+                     benchmark_code: str = "000300.SH",
+                     allow_short: bool = False, costs: bool = True,
+                     neutralize: bool = False,
+                     n_trials: int = 1,
+                     backend: str = "auto") -> dict[str, object]:
     """Run an implementation-backed catalog factor through the local engine.
 
     The adapter is deliberately local-only.  It reuses ``run_local_backtest``
@@ -195,7 +225,10 @@ def run_named_factor(*, factor_name: str, data_path: str, start: str, end: str,
     )
     result = run_local_backtest(
         source, work, factor_matrix=factor_matrix,
-        n_groups=groups, with_novelty=bool(with_novelty),
+        n_groups=groups, allow_short=allow_short, costs=costs,
+        neutralize=neutralize, n_trials=n_trials,
+        with_novelty=bool(with_novelty),
+        backend=backend,
         tearsheet_path=tearsheet_path,
     )
     result.update({"factor_name": str(factor_name),
@@ -211,9 +244,9 @@ def run_named_factor(*, factor_name: str, data_path: str, start: str, end: str,
     return result
 
 
-def build_staging(package_dir: str, db_path: Optional[str] = None, *,
+def build_staging(package_dir: str, db_path: str | None = None, *,
                   include_adjusted: bool = True,
-                  limit_files: Optional[int] = None) -> Dict[str, object]:
+                  limit_files: int | None = None) -> dict[str, object]:
     """One-command bridge: downloaded research package -> staging DuckDB.
 
     Reads the gateway package layout (``equity_daily_raw.zip`` + ``stock_list.csv``
@@ -238,12 +271,15 @@ def build_staging(package_dir: str, db_path: Optional[str] = None, *,
 
 
 def auto(*, package_dir: str, start: str, end: str,
-         factor_source: Optional[str] = None,
-         scaffold: Optional[tuple] = None,
-         db_path: Optional[str] = None, out_csv: Optional[str] = None,
-         tearsheet_path: Optional[str] = None, with_novelty: bool = True,
-         token: Optional[str] = None, gateway: Optional[str] = None,
-         include_adjusted: bool = True, groups: int = 5) -> Dict[str, object]:
+         factor_source: str | None = None,
+         scaffold: tuple | None = None,
+         db_path: str | None = None, out_csv: str | None = None,
+         tearsheet_path: str | None = None, with_novelty: bool = True,
+         token: str | None = None, gateway: str | None = None,
+         include_adjusted: bool = True, groups: int = 5,
+         allow_short: bool = False, costs: bool = True,
+         neutralize: bool = False, n_trials: int = 1,
+         backend: str = "auto") -> dict[str, object]:
     """Fully headless E2E: package -> staging -> factor -> CSV + tearsheet + score.
 
     One command lets any (AI) tool go from a downloaded research package to a
@@ -256,12 +292,15 @@ def auto(*, package_dir: str, start: str, end: str,
     result = run_research(factor_source=factor_source, data_path=str(bridge["db"]),
                           start=start, end=end, out_csv=out_csv,
                           tearsheet_path=tearsheet_path, with_novelty=with_novelty,
-                          token=token, gateway=gateway, groups=groups)
+                          token=token, gateway=gateway, groups=groups,
+                          allow_short=allow_short, costs=costs,
+                          neutralize=neutralize, n_trials=n_trials,
+                          backend=backend)
     result["staging"] = bridge
     return result
 
 
-def capabilities() -> Dict[str, object]:
+def capabilities() -> dict[str, object]:
     """Machine-readable entrypoints so any AI tool can discover how to start."""
     from evaluation import alpha_zoo, novelty_scoring
     from factors_catalog.factor_registry import FACTOR_DEFINITIONS
@@ -277,6 +316,13 @@ def capabilities() -> Dict[str, object]:
             "auto": "python -m quant_sdk.research auto --package-dir <downloaded-package> --start 20210101 --end 20241231 --out factor.csv --tearsheet report.html",
             "capabilities": "python -m quant_sdk.research capabilities",
             "named": "python -m quant_sdk.research named --factor-name <catalog-slug> --data <panel> --start YYYYMMDD --end YYYYMMDD",
+            "operators": "python -m quant_sdk.research operators",
+            "alpha_graph": "python -m quant_sdk.alpha_graph --data <panel> --start YYYYMMDD --end YYYYMMDD --factor-names A,B",
+            "evidence_pack": "python -m quant_sdk.evidence_pack pack --output A.qalpha --name A --factor-name A",
+            "evidence_audit": "python -m quant_sdk.evidence_audit --factor-name A --data <panel> --start YYYYMMDD --end YYYYMMDD --output audit.json",
+            "mcp": "node resources/app/electron/cli.cjs mcp.serve",
+            "workflow": "python -m quant_sdk.research_workflow inspect --data <panel> --start YYYYMMDD --end YYYYMMDD",
+            "factor_catalog": "python -c \"from factors_catalog.open_sources import catalog; print(catalog())\"",
         },
         "factor_contract": {
             "python_entry": "compute_factor(df) -> pandas.Series",
@@ -292,11 +338,13 @@ def capabilities() -> Dict[str, object]:
             "minute_published_through": MINUTE_ARCHIVE_END,
             "availability": "exact_input_fail_closed",
         },
-        "data": {"delivery": "researcher-owned local files",
-                 "formats": ["CSV", "Parquet", "DuckDB"],
-                 "offline": True},
-        "requirements": ["Python >= 3.11", "pandas >= 2.1", "numpy >= 1.26",
-                         "duckdb >= 1.1", "filelock >= 3.12", "scipy >= 1.11"],
+        "data": {"delivery": "NetBird 私网 + 平台 OAuth + 短期设备令牌",
+                 "package_files": ["equity_daily_raw.zip", "stock_list.csv",
+                                   "trade_calendar.csv", "delisted_list.csv", "index_daily.zip"]},
+        "requirements": ["Python >= 3.11", "pandas >= 2.0,<3.0", "numpy >= 1.24",
+                         "requests >= 2.28", "duckdb >= 1.0", "filelock >= 3.12",
+                         "scipy >= 1.10", "TA-Lib", "ta-cn", "MyTT",
+                         "pandas-ta-classic", "ta", "quantalib", "talipp", "pyti"],
     }
 
 
@@ -307,10 +355,17 @@ def _add_run_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--token", default=None, help="网关设备 token（可选，运行前授权校验）")
     p.add_argument("--gateway", default=None)
     p.add_argument("--groups", type=int, default=5)
+    p.add_argument("--trials", type=int, default=1,
+                   help="声明搜索过的候选数量，用于 DSR 多重检验校正")
+    p.add_argument("--allow-short", action="store_true")
+    p.add_argument("--neutralize", action="store_true",
+                   help="按 PIT 行业与流通市值做截面中性化")
+    p.add_argument("--no-costs", action="store_true")
     p.add_argument("--benchmark-code", default="000300.SH")
+    p.add_argument("--backend", choices=("auto", "cpu", "gpu"), default="auto")
 
 
-def _summary(result: Dict[str, object], out_csv: Optional[str]) -> Dict[str, object]:
+def _summary(result: dict[str, object], out_csv: str | None) -> dict[str, object]:
     return {
         "status": result.get("status"),
         "gateway_auth": result.get("gateway_auth"),
@@ -324,14 +379,17 @@ def _summary(result: Dict[str, object], out_csv: Optional[str]) -> Dict[str, obj
         "novelty": result.get("novelty"),
         "scoring": result.get("scoring"),
         "tearsheet_path": result.get("tearsheet_path"),
+        "backend_requested": result.get("backend_requested"),
+        "acceleration_mode": result.get("acceleration_mode"),
+        "acceleration": result.get("acceleration"),
         "out_csv": out_csv,
         "staging": result.get("staging"),
     }
 
 
 def mine_research(*, data_path: str, start: str, end: str, top_k: int = 20,
-                  out: Optional[str] = None,
-                  benchmark_code: str = "000300.SH") -> Dict[str, object]:
+                  out: str | None = None,
+                  benchmark_code: str = "000300.SH") -> dict[str, object]:
     """Rank a bounded grammar of candidates by the novelty-weighted score."""
     from evaluation import mining
     from quant_sdk.local_backtest import load_panel
@@ -353,8 +411,8 @@ def mine_research(*, data_path: str, start: str, end: str, top_k: int = 20,
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(prog="quant-research",
-                                     description="Local factor research and execution-aware backtesting")
+    parser = argparse.ArgumentParser(prog="quant-sdk research",
+                                     description="Token-to-factor research runner")
     sub = parser.add_subparsers(dest="command", required=True)
 
     s = sub.add_parser("scaffold", help="生成因子 compute_factor 模板")
@@ -395,6 +453,7 @@ def main() -> int:
     _add_run_args(a)
 
     sub.add_parser("capabilities", help="输出机器可读入口与契约（供 AI 工具发现）")
+    sub.add_parser("operators", help="输出内置截面、时序、回归和中性化算子清单")
 
     m = sub.add_parser("mine", help="自动挖掘：候选因子按 IC + 差异度评分排序")
     m.add_argument("--data", required=True, help="面板 CSV/Parquet 或 staging DuckDB")
@@ -412,7 +471,7 @@ def main() -> int:
     if args.command == "lint":
         # The exact rule set the platform applies at submission time, shipped with the
         # toolkit so a researcher can find out before submitting instead of after.
-        from server.sandbox.ast_audit import audit_factor_code
+        from quant_core.audit import audit_factor_code
 
         source = Path(args.file).read_text(encoding="utf-8")
         result = audit_factor_code(source)
@@ -427,6 +486,11 @@ def main() -> int:
 
     if args.command == "capabilities":
         print(json.dumps(capabilities(), ensure_ascii=False, indent=2))
+        return 0
+    if args.command == "operators":
+        from quant_sdk.operators import catalog
+
+        print(json.dumps(catalog(), ensure_ascii=False, indent=2))
         return 0
     if args.command == "scaffold":
         Path(args.out).write_text(scaffold_factor(args.name, args.family, args.window),
@@ -446,7 +510,12 @@ def main() -> int:
                       factor_source=source, scaffold=spec, db_path=args.db,
                       out_csv=args.out, tearsheet_path=args.tearsheet,
                       with_novelty=True, token=args.token, gateway=args.gateway,
-                      include_adjusted=not args.no_adjusted, groups=args.groups)
+                      include_adjusted=not args.no_adjusted, groups=args.groups,
+                      allow_short=args.allow_short,
+                      costs=not args.no_costs,
+                      neutralize=args.neutralize,
+                      n_trials=args.trials,
+                      backend=args.backend)
         print(json.dumps(_summary(result, args.out), ensure_ascii=False, indent=2))
         return 0
 
@@ -455,7 +524,10 @@ def main() -> int:
             factor_name=args.factor_name, data_path=args.data,
             start=args.start, end=args.end, out_csv=args.out,
             tearsheet_path=args.tearsheet, with_novelty=bool(args.novelty),
-            groups=args.groups, benchmark_code=args.benchmark_code)
+            groups=args.groups, benchmark_code=args.benchmark_code,
+            allow_short=args.allow_short, costs=not args.no_costs,
+            neutralize=args.neutralize, n_trials=args.trials,
+            backend=args.backend)
         print(json.dumps(_summary(result, args.out) | {
             "factor_name": result.get("factor_name"),
             "runnable": result.get("runnable"),
@@ -475,7 +547,10 @@ def main() -> int:
         data_path=args.data, start=args.start, end=args.end, out_csv=args.out,
         tearsheet_path=args.tearsheet, with_novelty=bool(args.novelty),
         token=args.token, gateway=args.gateway, groups=args.groups,
-        benchmark_code=args.benchmark_code)
+        benchmark_code=args.benchmark_code,
+        allow_short=args.allow_short, costs=not args.no_costs,
+        neutralize=args.neutralize, n_trials=args.trials,
+        backend=args.backend)
     print(json.dumps(_summary(result, args.out), ensure_ascii=False, indent=2))
     return 0
 

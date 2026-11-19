@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import unittest
+
 import numpy as np
 import pandas as pd
 
@@ -62,6 +63,34 @@ class IntradayEngineTests(unittest.TestCase):
         bars = _bars([("20230103", [10, 10.1, 10.2])])
         with self.assertRaises(ValueError):
             run_intraday(bars, np.zeros(len(bars)), allow_short=True)
+
+    def test_returns_use_previous_equity_and_observed_bar_frequency(self):
+        bars = _bars([("20230103", [10.0, 11.0, 12.1, 13.31, 14.641])])
+        res = run_intraday(
+            bars, np.zeros(len(bars)), base_shares=10_000,
+            config=FrictionConfig(initial_cash=1_000.0))
+        self.assertAlmostEqual(res.returns[0], 0.0)
+        self.assertAlmostEqual(
+            res.returns[1], res.equity_curve[1] / res.equity_curve[0] - 1.0)
+        self.assertEqual(res.periods_per_year, 252 * 5)
+        self.assertEqual(res.metrics["annualized"],
+                         round(float(np.prod(1.0 + res.returns) ** (252 * 5 / len(res.returns)) - 1.0), 6))
+
+    def test_turnover_is_executed_notional_not_cost_amount(self):
+        bars = _bars([("20230103", [10.0, 10.1]),
+                      ("20230104", [10.2, 10.3])])
+        factor = np.array([1.0, 0.0, -1.0, 0.0])
+        res = run_intraday(
+            bars, factor, order_shares=1_000_000,
+            config=FrictionConfig(
+                initial_cash=20_000_000.0, commission_rate=0.0003,
+                impact_coeff=0.0, max_participation=1.0))
+        self.assertGreater(res.turnover, 0.5)
+        self.assertGreater(res.turnover,
+                           sum(res.costs.values()) / FrictionConfig().initial_cash)
+        self.assertEqual(
+            res.turnover_definition,
+            "realized traded notional / mean finite equity")
 
 
 if __name__ == "__main__":

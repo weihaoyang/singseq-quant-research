@@ -1,9 +1,9 @@
-"""Ready-made factor templates (Qlib Alpha158-style), runnable in the sandbox.
+"""Ready-made factor templates (Qlib Alpha158-style), runnable locally.
 
 The catalogue exists so a researcher can start from a known-good factor instead of
 a blank editor.  Every template is an ordinary ``compute_factor(df)`` body over the
 canonical panel columns (ts_code / trade_date / open / high / low / close / vol /
-amount) and passes the sandbox AST audit (no system, file or reflection access).
+amount) and passes the shared factor AST audit (no system, file or reflection access).
 
 Families and formulas follow the published **Alpha158** feature set from
 Microsoft **Qlib** (MIT) — https://github.com/microsoft/qlib — which is the
@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Any
 
-__all__ = ["TEMPLATES", "STARTER_NAMES", "as_manifest", "find"]
+__all__ = ["STARTER_NAMES", "TEMPLATES", "as_manifest", "find"]
 
 STARTER_NAMES = ("RET5", "MOM_WINDOW", "HL_RANGE")
 
@@ -35,7 +35,7 @@ TEMPLATES: list[dict[str, str]] = [
         "code": "def compute_factor(df):\n"
                 "    WINDOW = 5\n"
                 "    close = df['close'].astype(float)\n"
-                "    return -close.pct_change(WINDOW)\n",
+                "    return -close.groupby(df['ts_code'], sort=False).pct_change(WINDOW, fill_method=None)\n",
     },
     {
         "name": "MOM_WINDOW", "family": "动量（可扫描）", "param": "WINDOW",
@@ -53,59 +53,64 @@ TEMPLATES: list[dict[str, str]] = [
         "code": "def compute_factor(df):\n"
                 "    WINDOW = 20\n"
                 "    close = df['close'].astype(float)\n"
-                "    return -close.pct_change().rolling(WINDOW).std()\n",
+                "    ret = close.groupby(df['ts_code'], sort=False).pct_change(fill_method=None)\n"
+                "    return -ret.groupby(df['ts_code'], sort=False).rolling(WINDOW).std().reset_index(level=0, drop=True)\n",
     },
     {
         "name": "RET20", "family": "price-reversal", "source": "Qlib Alpha158 RET (medium reversal)",
         "code": "def compute_factor(df):\n"
                 "    close = df['close'].astype(float)\n"
-                "    return -close.pct_change(20)\n",
+                "    return -close.groupby(df['ts_code'], sort=False).pct_change(20, fill_method=None)\n",
     },
     {
         "name": "MOM20", "family": "price-momentum", "source": "Qlib Alpha158 ROC family",
         "code": "def compute_factor(df):\n"
                 "    close = df['close'].astype(float)\n"
-                "    return close.pct_change(20)\n",
+                "    return close.groupby(df['ts_code'], sort=False).pct_change(20, fill_method=None)\n",
     },
     {
         "name": "MA_GAP_5_20", "family": "moving-average", "source": "Qlib Alpha158 MA family",
         "code": "def compute_factor(df):\n"
                 "    close = df['close'].astype(float)\n"
-                "    return (close.rolling(5).mean() - close.rolling(20).mean()) / close\n",
+                "    g = close.groupby(df['ts_code'], sort=False)\n"
+                "    return (g.rolling(5).mean().reset_index(level=0, drop=True) - g.rolling(20).mean().reset_index(level=0, drop=True)) / close\n",
     },
     {
         "name": "BIAS6", "family": "moving-average", "source": "Qlib Alpha158 BIAS",
         "code": "def compute_factor(df):\n"
                 "    close = df['close'].astype(float)\n"
-                "    ma = close.rolling(6).mean()\n"
+                "    ma = close.groupby(df['ts_code'], sort=False).rolling(6).mean().reset_index(level=0, drop=True)\n"
                 "    return (close - ma) / ma\n",
     },
     {
         "name": "RSI14", "family": "momentum", "source": "Qlib Alpha158 RSI",
         "code": "def compute_factor(df):\n"
                 "    close = df['close'].astype(float)\n"
-                "    diff = close.diff()\n"
-                "    up = diff.clip(lower=0).rolling(14).mean()\n"
-                "    down = (-diff.clip(upper=0)).rolling(14).mean()\n"
-                "    return 100.0 - 100.0 / (1.0 + up / down.replace(0.0, float('nan')))\n",
+                "    diff = close.groupby(df['ts_code'], sort=False).diff()\n"
+                "    up = diff.clip(lower=0).groupby(df['ts_code'], sort=False).rolling(14).mean().reset_index(level=0, drop=True)\n"
+                "    down = (-diff.clip(upper=0)).groupby(df['ts_code'], sort=False).rolling(14).mean().reset_index(level=0, drop=True)\n"
+                "    return 100.0 - 100.0 / (1.0 + up / down.where(down.ne(0.0)))\n",
     },
     {
         "name": "STD20", "family": "volatility", "source": "Qlib Alpha158 STD",
         "code": "def compute_factor(df):\n"
                 "    close = df['close'].astype(float)\n"
-                "    return -close.pct_change().rolling(20).std()\n",
+                "    ret = close.groupby(df['ts_code'], sort=False).pct_change(fill_method=None)\n"
+                "    return -ret.groupby(df['ts_code'], sort=False).rolling(20).std().reset_index(level=0, drop=True)\n",
     },
     {
         "name": "SKEW20", "family": "volatility", "source": "Qlib Alpha158 SKEW",
         "code": "def compute_factor(df):\n"
                 "    close = df['close'].astype(float)\n"
-                "    return -close.pct_change().rolling(20).skew()\n",
+                "    ret = close.groupby(df['ts_code'], sort=False).pct_change(fill_method=None)\n"
+                "    return -ret.groupby(df['ts_code'], sort=False).rolling(20).skew().reset_index(level=0, drop=True)\n",
     },
     {
         "name": "KURT20", "family": "volatility", "source": "Qlib Alpha158 KURT",
         "code": "def compute_factor(df):\n"
                 "    close = df['close'].astype(float)\n"
-                "    return -close.pct_change().rolling(20).kurt()\n",
+                "    ret = close.groupby(df['ts_code'], sort=False).pct_change(fill_method=None)\n"
+                "    return -ret.groupby(df['ts_code'], sort=False).rolling(20).kurt().reset_index(level=0, drop=True)\n",
     },
     {
         "name": "HL_RANGE", "family": "price-shape", "source": "Qlib Alpha158 KLEN/KMID family",
@@ -119,41 +124,51 @@ TEMPLATES: list[dict[str, str]] = [
         "name": "RSV20", "family": "price-shape", "source": "Qlib Alpha158 RSV",
         "code": "def compute_factor(df):\n"
                 "    close = df['close'].astype(float)\n"
-                "    lo = df['low'].rolling(20).min()\n"
-                "    hi = df['high'].rolling(20).max()\n"
-                "    return (close - lo) / (hi - lo).replace(0.0, float('nan'))\n",
+                "    lo = df['low'].groupby(df['ts_code'], sort=False).rolling(20).min().reset_index(level=0, drop=True)\n"
+                "    hi = df['high'].groupby(df['ts_code'], sort=False).rolling(20).max().reset_index(level=0, drop=True)\n"
+                "    span = hi - lo\n"
+                "    return (close - lo) / span.where(span.ne(0.0))\n",
     },
     {
         "name": "MAXRET20", "family": "price-shape", "source": "Qlib Alpha158 MAX (lottery reversal)",
         "code": "def compute_factor(df):\n"
                 "    close = df['close'].astype(float)\n"
-                "    return -(df['high'].rolling(20).max() / close - 1.0)\n",
+                "    high = df['high'].groupby(df['ts_code'], sort=False).rolling(20).max().reset_index(level=0, drop=True)\n"
+                "    return -(high / close - 1.0)\n",
     },
     {
         "name": "VMA_RATIO", "family": "volume", "source": "Qlib Alpha158 VMA / VSTD family",
         "code": "def compute_factor(df):\n"
                 "    amount = df['amount'].astype(float)\n"
-                "    return amount.rolling(5).mean() / amount.rolling(20).mean()\n",
+                "    g = amount.groupby(df['ts_code'], sort=False)\n"
+                "    return g.rolling(5).mean().reset_index(level=0, drop=True) / g.rolling(20).mean().reset_index(level=0, drop=True)\n",
     },
     {
         "name": "VOLUME_SURPRISE", "family": "volume", "source": "Qlib Alpha158 VROC family",
         "code": "def compute_factor(df):\n"
                 "    vol = df['vol'].astype(float)\n"
-                "    return vol / vol.rolling(20).mean()\n",
+                "    mean = vol.groupby(df['ts_code'], sort=False).rolling(20).mean().reset_index(level=0, drop=True)\n"
+                "    return vol / mean\n",
     },
     {
         "name": "ILLIQ20", "family": "liquidity", "source": "Amihud illiquidity (classic)",
         "code": "def compute_factor(df):\n"
                 "    close = df['close'].astype(float)\n"
-                "    amount = df['amount'].astype(float).replace(0.0, float('nan'))\n"
-                "    return -(close.pct_change().abs() / (amount / 1e5)).rolling(20).mean()\n",
+                "    amount = df['amount'].astype(float)\n"
+                "    amount = amount.where(amount.ne(0.0))\n"
+                "    ret = close.groupby(df['ts_code'], sort=False).pct_change(fill_method=None).abs()\n"
+                "    illiq = ret / (amount / 1e5)\n"
+                "    return -illiq.groupby(df['ts_code'], sort=False).rolling(20).mean().reset_index(level=0, drop=True)\n",
     },
     {
         "name": "CORR_AMT_CLOSE20", "family": "liquidity", "source": "Qlib Alpha158 CORR",
         "code": "def compute_factor(df):\n"
-                "    close = df['close'].astype(float)\n"
-                "    amount = df['amount'].astype(float)\n"
-                "    return -close.rolling(20).corr(amount)\n",
+                "    work = df[['ts_code', 'close', 'amount']].copy()\n"
+                "    work['close'] = work['close'].astype(float)\n"
+                "    work['amount'] = work['amount'].astype(float)\n"
+                "    corr = work.groupby('ts_code', sort=False, group_keys=False).apply(\n"
+                "        lambda g: g['close'].rolling(20).corr(g['amount']))\n"
+                "    return -corr.reindex(df.index)\n",
     },
 ]
 

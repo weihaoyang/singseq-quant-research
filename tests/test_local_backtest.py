@@ -29,6 +29,15 @@ def _panel_df() -> pd.DataFrame:
 
 
 class LocalBacktestTests(unittest.TestCase):
+    def test_too_small_panel_error_is_actionable(self):
+        data = _panel_df()
+        data = data.loc[data.ts_code.isin(sorted(data.ts_code.unique())[:4])]
+        with self.assertRaisesRegex(ValueError, "至少需要 3 个交易日和 10 只股票"):
+            run_local_backtest(
+                "def compute_factor(df):\n    return df['close']\n",
+                data,
+            )
+
     def test_optional_risk_borrow_and_universe_columns_reach_engine_aligned(self):
         from quant_sdk.local_backtest import panel_from_frame
         data = _panel_df()
@@ -69,9 +78,11 @@ class LocalBacktestTests(unittest.TestCase):
                 self.assertIn(label, html)
 
     def test_custom_daily_table_keeps_optional_engine_columns(self):
-        import duckdb
         import tempfile
         from pathlib import Path
+
+        import duckdb
+
         from quant_sdk.local_backtest import load_panel
         with tempfile.TemporaryDirectory() as directory:
             data = _panel_df()
@@ -93,11 +104,27 @@ class LocalBacktestTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "复权收盘"):
             run_local_backtest("def compute_factor(df):\n    return df['close']\n", data)
 
+    def test_short_slice_without_listing_dates_does_not_fake_an_ipo(self):
+        data = _panel_df()
+        self.assertLess(data["trade_date"].nunique(), 60)
+        result = run_local_backtest(
+            "def compute_factor(df):\n    return df['close']\n",
+            data,
+            costs=True,
+        )
+        self.assertGreater(float(result["turnover_mean"] or 0.0), 0.0)
+        self.assertEqual(result["capacity"]["status"], "OK")
+        self.assertTrue(any(
+            "无权威上市日期" in item
+            for item in result["approximations"]
+        ))
+
     def test_csv_keeps_finite_values_and_binds_provenance_to_content(self):
-        import tempfile
         import hashlib
         import json
+        import tempfile
         from pathlib import Path
+
         from quant_sdk.research import run_research
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -113,6 +140,42 @@ class LocalBacktestTests(unittest.TestCase):
             receipt = json.loads((root / "factor.csv.provenance.json").read_text())
             self.assertEqual(receipt["csv_sha256"], hashlib.sha256((root / "factor.csv").read_bytes()).hexdigest())
             self.assertEqual(receipt["package_version"], "test-version")
+
+    def test_research_runner_computes_each_factor_only_once(self):
+        import tempfile
+        from pathlib import Path
+
+        from quant_sdk.research import run_research
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "data.parquet"
+            _panel_df().to_parquet(path)
+            with patch("quant_sdk.local_backtest.run_local_backtest",
+                       return_value={}) as run:
+                result = run_research(
+                    factor_source="def compute_factor(df):\n    return df['close']\n",
+                    data_path=str(path), start="20230101", end="20230212")
+            matrix = run.call_args.kwargs["factor_matrix"]
+            self.assertEqual(matrix.shape, (40, 12))
+            self.assertTrue(np.isfinite(matrix).all())
+            self.assertEqual(result["factor_rows"], 480)
+
+    def test_research_cli_exposes_the_canonical_run_controls(self):
+        import subprocess
+        import sys
+        completed = subprocess.run(
+            [sys.executable, "-m", "quant_sdk.research", "run", "--help"],
+            capture_output=True, text=True, encoding="utf-8", timeout=30)
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        for flag in (
+            "--trials", "--allow-short", "--neutralize", "--no-costs",
+            "--backend",
+        ):
+            self.assertIn(flag, completed.stdout)
+        local = subprocess.run(
+            [sys.executable, "-m", "quant_sdk.cli", "local-backtest", "--help"],
+            capture_output=True, text=True, encoding="utf-8", timeout=30)
+        self.assertEqual(local.returncode, 0, local.stdout + local.stderr)
+        self.assertIn("--backend", local.stdout)
 
     def test_factor_series_is_aligned_by_index_even_when_returned_in_reverse(self):
         from quant_sdk.research import _compute_factor_series
@@ -135,12 +198,46 @@ class LocalBacktestTests(unittest.TestCase):
         expected = -ordered.groupby("ts_code")["close"].pct_change(5, fill_method=None)
         np.testing.assert_allclose(values, expected.to_numpy(), equal_nan=True)
 
+    def test_every_builtin_template_is_stock_boundary_and_permutation_safe(self):
+        from quant_sdk import factor_templates
+        from quant_sdk.research import _compute_factor_series
+        data = _panel_df().reset_index(names="_row_id")
+        ordered = data.sort_values(["ts_code", "trade_date"], kind="mergesort").reset_index(drop=True)
+        groups = [group.sort_values("trade_date")
+                  for _, group in data.groupby("ts_code", sort=False)]
+        np.random.default_rng(23).shuffle(groups)
+        permuted = pd.concat(groups, ignore_index=True)
+        for template in factor_templates.TEMPLATES:
+            source = template["code"]
+            first = _compute_factor_series(source, ordered)
+            shuffled = _compute_factor_series(source, permuted)
+            expected = ordered[["ts_code", "trade_date"]].assign(value=first)
+            actual = permuted[["ts_code", "trade_date"]].assign(value=shuffled)
+            shuffled = expected.merge(
+                actual, on=["ts_code", "trade_date"], how="left",
+                validate="one_to_one", suffixes=("_expected", "_actual")
+            )["value_actual"].to_numpy(dtype=float)
+            np.testing.assert_allclose(
+                first, shuffled, equal_nan=True,
+                err_msg=f"{template['name']} depends on input row order")
+        for name in ("RET5", "REV_WINDOW", "MOM20", "VOL_WINDOW"):
+            source = factor_templates.find(name)["code"]
+            values = _compute_factor_series(source, ordered)
+            first_rows = ordered.groupby("ts_code", sort=False).head(1).index.to_numpy()
+            self.assertTrue(np.isnan(values[first_rows]).all(), name)
+
     def test_runs_canonical_engine_locally(self):
         res = run_local_backtest(
             "def compute_factor(df):\n"
             "    return -df.groupby('ts_code')['close'].pct_change(5)\n",
             _panel_df(), with_novelty=True)
         self.assertEqual(res["status"], "LOCAL_UNVERIFIED")
+        self.assertEqual(res["backend_requested"], "auto")
+        self.assertIn(
+            res["acceleration_mode"],
+            {"cpu", "cuda", "cpu-fallback"},
+        )
+        self.assertIn("total_ms", res["acceleration"])
         self.assertEqual(res["matching"], "next-day-open")
         self.assertFalse(res["allow_short"])
         self.assertIn("sharpe", res["metrics"])
@@ -150,6 +247,34 @@ class LocalBacktestTests(unittest.TestCase):
         self.assertEqual(len(curves["ls"]), res["dates"])
         self.assertEqual(len(curves["drawdown"]), res["dates"])
         self.assertEqual(curves["dates"][0], sorted(curves["dates"])[0])
+
+    def test_explicit_cpu_backend_does_not_import_torch(self):
+        from quant_core.backtest import _resolve_backend
+        with patch("quant_core.backtest._gpu_module") as gpu_module:
+            self.assertEqual(_resolve_backend("cpu"), (False, "cpu", None))
+            gpu_module.assert_not_called()
+
+    def test_cuda_backtest_matches_cpu_when_available(self):
+        from quant_core.gpu import cuda_available
+        if not cuda_available():
+            self.skipTest("CUDA backend is not installed")
+        source = (
+            "def compute_factor(df):\n"
+            "    return -df.groupby('ts_code')['close'].pct_change(5)\n"
+        )
+        cpu = run_local_backtest(source, _panel_df(), backend="cpu")
+        gpu = run_local_backtest(source, _panel_df(), backend="gpu")
+        self.assertEqual(gpu["acceleration_mode"], "cuda")
+        self.assertEqual(gpu["metrics"], cpu["metrics"])
+        self.assertEqual(gpu["curves"], cpu["curves"])
+        self.assertEqual(
+            gpu["ic_mean"],
+            cpu["ic_mean"],
+        )
+        self.assertEqual(
+            gpu["turnover_mean"],
+            cpu["turnover_mean"],
+        )
 
     def test_missing_benchmark_uses_labelled_zero_proxy(self):
         # The engine deliberately falls back to a zero-return benchmark when

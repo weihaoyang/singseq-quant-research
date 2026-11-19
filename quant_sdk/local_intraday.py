@@ -9,16 +9,22 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Dict, Optional, Sequence
+from typing import Any
 
 import numpy as np
 import pandas as pd
 
-from quant_sdk.local import _safe_builtins
+from quant_sdk.local import _safe_builtins, audit_factor_source
 
-__all__ = ["load_minute_bars", "load_minute_universe", "run_local_intraday",
-           "run_local_intraday_cross_section", "index_benchmark_returns"]
+__all__ = [
+    "index_benchmark_returns",
+    "load_minute_bars",
+    "load_minute_universe",
+    "run_local_intraday",
+    "run_local_intraday_cross_section",
+]
 
 _AGG_FUNCS = {"last": "last", "mean": "mean", "first": "first",
               "max": "max", "min": "min", "median": "median"}
@@ -38,10 +44,10 @@ def _canonical_codes(values: pd.Series) -> pd.Series:
             .str.replace(r"^(SH|SZ|BJ)([0-9]{6})$", r"\2.\1", regex=True))
 
 
-def _read_minute_file(source: Path, *, code: Optional[str] = None) -> pd.DataFrame:
+def _read_minute_file(source: Path, *, code: str | None = None) -> pd.DataFrame:
     if source.suffix.lower() == ".parquet":
         frame = pd.read_parquet(source)
-        if "ts_code" not in frame.columns and _RAW_PARQUET_COLUMNS <= set(frame.columns):
+        if "ts_code" not in frame.columns and set(frame.columns) >= _RAW_PARQUET_COLUMNS:
             # The daily vendor archive is in shares, while normalized releases
             # and the annual stock CSVs already report lots.
             frame = frame.rename(columns={"code": "ts_code", "date": "trade_date"})
@@ -54,8 +60,8 @@ def _read_minute_file(source: Path, *, code: Optional[str] = None) -> pd.DataFra
     return _normalize_bars(frame, code=code, stem=source.stem)
 
 
-def _normalize_bars(frame: pd.DataFrame, *, code: Optional[str] = None,
-                    stem: Optional[str] = None) -> pd.DataFrame:
+def _normalize_bars(frame: pd.DataFrame, *, code: str | None = None,
+                    stem: str | None = None) -> pd.DataFrame:
     frame = frame.copy()
     frame.columns = [str(c).strip() for c in frame.columns]
     frame = frame.rename(columns=_RENAME)
@@ -84,7 +90,7 @@ def _normalize_bars(frame: pd.DataFrame, *, code: Optional[str] = None,
     return frame
 
 
-def load_minute_bars(path: str | Path, *, code: Optional[str] = None) -> pd.DataFrame:
+def load_minute_bars(path: str | Path, *, code: str | None = None) -> pd.DataFrame:
     """Load a minute-bar file (or the first file in a directory)."""
     source = Path(path).expanduser()
     if source.is_dir():
@@ -95,7 +101,7 @@ def load_minute_bars(path: str | Path, *, code: Optional[str] = None) -> pd.Data
     return _read_minute_file(source, code=code)
 
 
-def load_minute_universe(path: str | Path, *, limit: Optional[int] = None,
+def load_minute_universe(path: str | Path, *, limit: int | None = None,
                          pattern: str = "") -> pd.DataFrame:
     """Load every minute file under a directory (a downloaded minute release).
 
@@ -117,7 +123,8 @@ def load_minute_universe(path: str | Path, *, limit: Optional[int] = None,
 
 
 def _signal(source_code: str, frame: pd.DataFrame) -> np.ndarray:
-    env: Dict[str, Any] = {"__builtins__": _safe_builtins(),
+    audit_factor_source(source_code)
+    env: dict[str, Any] = {"__builtins__": _safe_builtins(),
                            "__name__": "__intraday__",
                            "pd": pd, "pandas": pd, "np": np, "numpy": np}
     exec(compile(source_code, "<intraday>", "exec"), env)
@@ -139,9 +146,14 @@ def _signal(source_code: str, frame: pd.DataFrame) -> np.ndarray:
 def run_local_intraday(source_code: str, bars: pd.DataFrame, *,
                        buy_threshold: float = 0.0, sell_threshold: float = 0.0,
                        order_shares: int = 10_000, base_shares: int = 0,
-                       allow_short: bool = False) -> Dict[str, Any]:
-    from server.engine.intraday import run_intraday
+                       allow_short: bool = False) -> dict[str, Any]:
+    from quant_core.intraday import run_intraday
 
+    try:
+        from quant_sdk.licensing import ensure_engine_license
+        ensure_engine_license(scope=("local_engine", "local_intraday"))
+    except ImportError:                              # pragma: no cover
+        pass
 
     if "ts_code" in bars.columns and bars["ts_code"].nunique() > 1:
         raise RuntimeError("单标的回测需要用 --code 选定一只证券，或改用截面回测")
@@ -158,15 +170,17 @@ def run_local_intraday(source_code: str, bars: pd.DataFrame, *,
     return {
         "status": "LOCAL_UNVERIFIED",
         "data_mode": "local_intraday",
-        "engine": "canonical_intraday (server.engine.intraday)",
+        "engine": "canonical_intraday (quant_core.intraday)",
         "matching": "next-bar-open",
-        "bars": int(len(frame)),
+        "bars": len(frame),
         "allow_short": allow_short,
         "buy_threshold": buy_threshold,
         "sell_threshold": sell_threshold,
         "trade_count": res.trade_count,
         "round_trips": res.round_trips,
         "turnover": round(float(res.turnover), 6),
+        "turnover_definition": res.turnover_definition,
+        "periods_per_year": res.periods_per_year,
         "costs": res.costs,
         "blocked": res.blocked,
         "metrics": res.metrics,
@@ -216,9 +230,9 @@ def run_local_intraday_cross_section(source_code: str, bars: pd.DataFrame, *,
                                      costs: bool = True, neutralize: bool = False,
                                      allow_short: bool = False,
                                      up_limit_pct: float = 0.10,
-                                     benchmark_ret: Optional[np.ndarray] = None,
-                                     benchmark_index_code: Optional[str] = None
-                                     ) -> Dict[str, Any]:
+                                     benchmark_ret: np.ndarray | None = None,
+                                     benchmark_index_code: str | None = None
+                                     ) -> dict[str, Any]:
     """Multi-name intraday cross-section: intraday signal -> daily portfolio.
 
     A-share T+1 means a portfolio cannot round-trip intraday, so the correct
@@ -229,6 +243,11 @@ def run_local_intraday_cross_section(source_code: str, bars: pd.DataFrame, *,
     """
     from quant_sdk.local_backtest import run_local_backtest
 
+    try:
+        from quant_sdk.licensing import ensure_engine_license
+        ensure_engine_license(scope=("local_engine", "local_backtest"))
+    except ImportError:                              # pragma: no cover
+        pass
 
     frame = bars.copy()
     if frame["vol"].isna().any():
@@ -282,7 +301,7 @@ def run_local_intraday_cross_section(source_code: str, bars: pd.DataFrame, *,
         neutralize=neutralize, up_limit_pct=up_limit_pct)
     result["data_mode"] = "local_intraday_cross_section"
     result["intraday_aggregation"] = agg_key
-    result["bars"] = int(len(frame))
+    result["bars"] = len(frame)
     result["benchmark_source"] = benchmark_source
     if benchmark_proxy:
         approximations = result.setdefault("approximations", [])

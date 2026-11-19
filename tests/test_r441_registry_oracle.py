@@ -235,7 +235,9 @@ class RegistryOracleTests(unittest.TestCase):
         random = np.random.default_rng(73)
         rows = []
         for code in ("000001.SZ", "000002.SZ"):
-            close = np.exp(np.cumsum(random.normal(0, 0.01, len(dates)))) * 10
+            close = np.exp(
+                np.cumsum(random.normal(0, 0.01, len(dates)))
+            ) * 10
             for day, price in zip(dates, close):
                 rows.append({
                     "ts_code": code,

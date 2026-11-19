@@ -12,13 +12,14 @@ from __future__ import annotations
 
 import builtins
 import json
+from collections.abc import Iterable, Sequence
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+from typing import Any
 
 import numpy as np
 import pandas as pd
 
-__all__ = ["LocalFactorRunner", "run_local_factor", "SAFE_IMPORT_ROOTS"]
+__all__ = ["SAFE_IMPORT_ROOTS", "LocalFactorRunner", "run_local_factor"]
 
 SAFE_IMPORT_ROOTS = frozenset((
     "__future__", "math", "cmath", "statistics", "datetime", "decimal",
@@ -37,17 +38,38 @@ _REAL_IMPORT = builtins.__import__
 
 def _safe_import(name, globals=None, locals=None, fromlist=(), level=0):
     root = str(name).split(".", 1)[0]
-    if level != 0 or root not in SAFE_IMPORT_ROOTS:
+    trusted_sdk_module = (
+        str(name) == "quant_sdk.operators"
+        or str(name).startswith("quant_sdk.operators.")
+        or str(name) == "quant_sdk.catalog_factors"
+    )
+    if level != 0 or (root not in SAFE_IMPORT_ROOTS and not trusted_sdk_module):
         raise ImportError(f"本地运行禁止导入模块 {name!r}")
     return _REAL_IMPORT(name, globals, locals, fromlist, level)
 
 
-def _safe_builtins() -> Dict[str, Any]:
+def _safe_builtins() -> dict[str, Any]:
     out = {n: getattr(builtins, n) for n in dir(builtins)}
     for n in _BLOCKED:
         out.pop(n, None)
     out["__import__"] = _safe_import
     return out
+
+
+def audit_factor_source(source_code: str) -> None:
+    """Apply the platform's static factor contract before local execution."""
+    from quant_core.audit import audit_factor_code
+
+    audit = audit_factor_code(source_code)
+    if audit.passed:
+        return
+    details = [str(item) for item in getattr(audit, "rejections", ())]
+    criticals = [
+        f"line {item.line}: {item.explanation}"
+        for item in getattr(audit, "criticals", ())
+    ]
+    reason = "; ".join([*details, *criticals]) or "unknown static-audit rejection"
+    raise RuntimeError(f"因子源码未通过平台静态检查：{reason}")
 
 
 class LocalFactorRunner:
@@ -58,7 +80,7 @@ class LocalFactorRunner:
 
     def fetch_panel(self, ts_codes: Sequence[str], start: str, end: str,
                     *, api: str = "daily", page: int = 1000) -> pd.DataFrame:
-        frames: List[pd.DataFrame] = []
+        frames: list[pd.DataFrame] = []
         for code in ts_codes:
             offset = 0
             while True:
@@ -104,14 +126,15 @@ class LocalFactorRunner:
                             columns=data.get("columns", []))
 
     def compute(self, source_code: str, panel: pd.DataFrame,
-                *, price_col: str = "open") -> Dict[str, Any]:
+                *, price_col: str = "open") -> dict[str, Any]:
         if price_col not in panel.columns:
             raise RuntimeError(f"面板缺少 {price_col} 列")
+        audit_factor_source(source_code)
         work = panel.sort_values(["ts_code", "trade_date"]).copy()
         # The factor must see exactly the frame its values are attached to (a differently
         # ordered frame silently swaps values between stocks), and must NOT see the
         # forward return: `_fwd` is added after the call.
-        env: Dict[str, Any] = {"__builtins__": _safe_builtins(),
+        env: dict[str, Any] = {"__builtins__": _safe_builtins(),
                                "__name__": "__local_factor__",
                                "pd": pd, "pandas": pd, "np": np, "numpy": np}
         exec(compile(source_code, "<local_factor>", "exec"), env)
@@ -135,9 +158,9 @@ class LocalFactorRunner:
         return self._metrics(work)
 
     @staticmethod
-    def _metrics(work: pd.DataFrame) -> Dict[str, Any]:
+    def _metrics(work: pd.DataFrame) -> dict[str, Any]:
         finite = work[np.isfinite(work["factor_value"]) & np.isfinite(work["_fwd"])]
-        ic_series: List[float] = []
+        ic_series: list[float] = []
         for _, group in finite.groupby("trade_date"):
             if len(group) < 5:
                 continue
@@ -154,8 +177,8 @@ class LocalFactorRunner:
         return {
             "status": "LOCAL_UNVERIFIED",
             "data_mode": "local",
-            "rows": int(len(work)),
-            "scored_rows": int(len(finite)),
+            "rows": len(work),
+            "scored_rows": len(finite),
             "coverage": round(len(finite) / len(work), 6) if len(work) else 0.0,
             "ic_days": int(ic_arr.size),
             "mean_rank_ic": None if mean_ic is None else round(mean_ic, 6),
@@ -165,14 +188,14 @@ class LocalFactorRunner:
 
 
 def run_local_factor(source_code: str, *, ts_codes: Iterable[str], start: str,
-                     end: str, token: Optional[str] = None,
-                     base_url: Optional[str] = None,
+                     end: str, token: str | None = None,
+                     base_url: str | None = None,
                      api: str = "daily", price_col: str = "open",
-                     result_csv: Optional[str | Path] = None,
-                     client: Any = None) -> Dict[str, Any]:
+                     result_csv: str | Path | None = None,
+                     client: Any = None) -> dict[str, Any]:
     """End-to-end local run: fetch slice -> compute -> metrics (optional CSV)."""
     if client is None:
-        from quant_sdk.client import QuantClient
+        from quant_sdk.provider import QuantClient
         client = QuantClient(base_url=base_url, token=token)
     codes = [c for c in ts_codes if str(c).strip()]
     if not codes:

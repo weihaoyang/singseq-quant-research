@@ -9,8 +9,9 @@ import argparse
 import importlib.util
 import time
 import types
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import pandas as pd
 
@@ -23,9 +24,12 @@ def load_frame(path: str | Path) -> pd.DataFrame:
 
 
 def load_factor(path: str | Path | Callable[[pd.DataFrame], pd.Series]):
+    from quant_sdk.local import audit_factor_source
+
     if callable(path):
         return path
     if isinstance(path, str) and ("\n" in path or "\r" in path) and "compute_factor" in path:
+        audit_factor_source(path)
         module = types.ModuleType("quant_local_factor_source")
         exec(compile(path, "<local_factor>", "exec"), module.__dict__)  # noqa: S102
         fn = getattr(module, "compute_factor", None)
@@ -33,6 +37,7 @@ def load_factor(path: str | Path | Callable[[pd.DataFrame], pd.Series]):
             raise ValueError("因子源码必须定义 compute_factor(df) -> pandas.Series")
         return fn
     source = Path(path).expanduser()
+    audit_factor_source(source.read_text(encoding="utf-8"))
     spec = importlib.util.spec_from_file_location("quant_local_factor", source)
     if spec is None or spec.loader is None:
         raise ValueError(f"无法载入因子文件: {source}")
@@ -67,7 +72,7 @@ def preflight(data: str | Path, factor: str | Path | Callable[[pd.DataFrame], pd
     if missing:
         return {
             "ok": False, "status": "LOCAL_PREFLIGHT_FAILED", "panel_source": "researcher_owned",
-            "sample_rows": int(len(frame)), "columns": [str(c) for c in frame.columns],
+            "sample_rows": len(frame), "columns": [str(c) for c in frame.columns],
             "null_ratio": 0.0,
             "errors": [f"MISSING_IDENTITY_COLUMNS: {', '.join(missing)}"],
             "duration_ms": int((time.perf_counter() - started) * 1000),
@@ -79,7 +84,7 @@ def preflight(data: str | Path, factor: str | Path | Callable[[pd.DataFrame], pd
     except Exception as exc:  # noqa: BLE001
         return {
             "ok": False, "status": "LOCAL_PREFLIGHT_FAILED", "panel_source": "researcher_owned",
-            "sample_rows": int(len(frame)), "columns": [str(c) for c in frame.columns],
+            "sample_rows": len(frame), "columns": [str(c) for c in frame.columns],
             "null_ratio": 0.0,
             "errors": [f"FACTOR_EXECUTION_ERROR[{type(exc).__name__}]: {exc}"],
             "duration_ms": int((time.perf_counter() - started) * 1000),
@@ -103,7 +108,7 @@ def preflight(data: str | Path, factor: str | Path | Callable[[pd.DataFrame], pd
         "status": "LOCAL_PREFLIGHT_PASSED" if not errors else "LOCAL_PREFLIGHT_FAILED",
         "verification": "LOCAL",
         "panel_source": "researcher_owned",
-        "sample_rows": int(len(frame)),
+        "sample_rows": len(frame),
         "columns": [str(c) for c in frame.columns],
         "null_ratio": null_ratio,
         "errors": errors,
@@ -129,7 +134,7 @@ def run(data: str | Path, factor: str | Path, output: str | Path) -> dict[str, A
             "compute_factor 的输出无法转换为数值（全为文本/对象），拒绝写出全空结果")
     result["factor_value"] = numeric.to_numpy()
     result.to_csv(Path(output).expanduser(), index=False)
-    return {"status": "LOCAL", "rows": int(len(result)), "output": str(Path(output).expanduser()),
+    return {"status": "LOCAL", "rows": len(result), "output": str(Path(output).expanduser()),
             "non_null_factor_rows": int(result["factor_value"].notna().sum())}
 
 

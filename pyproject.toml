@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "singseq-quant-research"
-version = "0.3.0"
-description = "Local quantitative research with execution-aware backtesting, factor diagnostics and reproducible reports."
+version = "0.4.0"
+description = "Institutional local quantitative research with Nautilus Rust event engine, Alphalens factor analytics, PyFolio risk metrics, PyPortfolioOpt, AkShare, and Qlib ML Alpha."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md"]
 authors = [{ name = "SingSeq Quant Research contributors" }]
-keywords = ["quantitative-finance", "backtesting", "factor-research", "a-shares", "ai-agent", "mcp"]
+keywords = ["quantitative-finance", "backtesting", "factor-research", "a-shares", "ai-agent", "mcp", "nautilus-trader", "alphalens", "pyfolio"]
 classifiers = [
   "Development Status :: 4 - Beta",
   "Programming Language :: Python :: 3",
@@ -27,14 +27,29 @@ dependencies = [
   "polars>=1.0",
   "filelock>=3.12",
   "numba>=0.68.1",
+  "akshare>=1.15.0",
+  "pypfopt>=1.5.0",
+  "alphalens-reloaded>=0.4.0",
+  "pyfolio-reloaded>=0.10.0",
+  "empyrical-reloaded>=0.7.0",
+  "lightgbm>=4.0.0",
+  "MyTT>=2.9.0",
 ]
 
 [project.optional-dependencies]
+nautilus = ["nautilus_trader>=1.200.0"]
+talib = ["TA-Lib>=0.4.0"]
 ml = ["torch>=2.2", "scikit-learn>=1.3", "lightgbm>=4.0"]
-acceleration = ["numba>=0.60"]
+full = [
+  "nautilus_trader>=1.200.0",
+  "TA-Lib>=0.4.0",
+  "torch>=2.2",
+  "scikit-learn>=1.3",
+]
 
 [project.scripts]
 quant-research = "quant_sdk.research:main"
+jq2quant = "jq2quant.cli:main"
 qprotocol-verify = "qprotocol_verify:main"
 qalpha-verify = "qalpha_verify:main"
 
@@ -48,6 +63,6 @@ py-modules = ["factor_base", "qprotocol_verify", "qalpha_verify"]
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["quant_sdk*", "factors_catalog*", "evaluation*", "research*", "deep_alpha*", "server", "server.engine*", "server.sandbox*"]
+include = ["quant_sdk*", "jq2quant*", "factors_catalog*", "evaluation*", "research*", "deep_alpha*", "server", "server.engine*", "server.sandbox*"]
 exclude = ["tests*"]
 namespaces = false

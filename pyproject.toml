@@ -11,7 +11,7 @@ requires-python = ">=3.11"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md"]
 authors = [{ name = "SingSeq Quant Research contributors" }]
-keywords = ["quantitative-finance", "backtesting", "factor-research", "a-shares", "ai-agent"]
+keywords = ["quantitative-finance", "backtesting", "factor-research", "a-shares", "ai-agent", "mcp"]
 classifiers = [
   "Development Status :: 4 - Beta",
   "Programming Language :: Python :: 3",
@@ -35,6 +35,8 @@ acceleration = ["numba>=0.60"]
 
 [project.scripts]
 quant-research = "quant_sdk.research:main"
+qprotocol-verify = "qprotocol_verify:main"
+qalpha-verify = "qalpha_verify:main"
 
 [project.urls]
 Homepage = "https://quant.singseq.com"
@@ -42,7 +44,7 @@ Repository = "https://github.com/weihaoyang/singseq-quant-research"
 Issues = "https://github.com/weihaoyang/singseq-quant-research/issues"
 
 [tool.setuptools]
-py-modules = ["factor_base"]
+py-modules = ["factor_base", "qprotocol_verify", "qalpha_verify"]
 
 [tool.setuptools.packages.find]
 where = ["."]

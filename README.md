@@ -10,7 +10,7 @@ A local backtesting system for factor and portfolio research, with stateful exec
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](pyproject.toml)
 [![License](https://img.shields.io/badge/License-Apache--2.0-blue)](LICENSE)
 
-[回测系统](#回测系统) · [快速开始](#快速开始) · [使用自己的数据](#使用自己的数据) · [研究能力](#研究能力) · [给-agent-的提示词](#给-agent-的提示词) · [Quant 官网](https://quant.singseq.com)
+[回测系统](#回测系统) · [快速开始](#快速开始) · [使用自己的数据](#使用自己的数据) · [研究能力](#研究能力) · [开放研究协议](#开放研究协议) · [给-agent-的提示词](#给-agent-的提示词) · [Quant 官网](https://quant.singseq.com)
 
 </div>
 
@@ -205,6 +205,30 @@ python -m research.run_baselines --help
 `deep_alpha/` 提供 PyTorch 数据管道、按交易日采样、训练检查点，以及 iTransformer、PatchTST、AlphaNet 研究实现。`research.run_baselines` 包含简单反转、Ridge、LightGBM 和可选 Transformer 的时间分段实验入口。模型比较需要符合契约的真实数据，参数、数据区间和输出目录由实验配置确定。
 
 GPU 算子通过可选 PyTorch 后端执行，CPU 路径可用于基础回测。运行时结果记录实际执行模式，机器兼容性和显存需求由所选模型及面板规模决定。
+
+## 开放研究协议
+
+量化研究的执行不应依赖某个客户端的内部实现。本仓库同时公开
+[Quant Research Protocol 2.0](AGENT_PROTOCOL.md) 的规范、工具档位和独立校验器：
+
+- [`protocol/profiles.json`](protocol/profiles.json)：`agent`、`core`、`full`
+  三档工具面，默认 `agent` 只包含本地研究与证据工具。
+- [`protocol/schemas.json`](protocol/schemas.json)：工具输入、结构化输出和资源契约。
+- [`qprotocol_verify.py`](qprotocol_verify.py)：只使用 Python 标准库的协议一致性校验器。
+- [`qalpha-verify.py`](qalpha-verify.py)：离线检查 `.qalpha` 证据包的完整性和可选签名。
+
+协议要求因子计算、回测、扫描、训练和诊断在用户电脑或用户控制的数据环境执行。
+研究结果保持惰性；提交、发布、排名和正式评测必须是独立且有明确授权的动作。
+
+校验一个本地 MCP 运行时：
+
+```bash
+qprotocol-verify --command quant-agent --arg mcp --arg serve --json
+```
+
+直接从源码运行校验器时，可使用 `python qprotocol_verify.py` 或
+`python qalpha_verify.py`。完整发布包可从
+[Quant 下载页](https://quant.singseq.com/download#agent-research)获取。
 
 ## 给 Agent 的提示词
 
